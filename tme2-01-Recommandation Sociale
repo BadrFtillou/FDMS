@@ -1,0 +1,432 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h1>TME 01 : Recommandation sociale</h1>"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h3>Importations des librairies utilisées</h3>"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {
+    "collapsed": false
+   },
+   "outputs": [],
+   "source": [
+    "import math;\n",
+    "from math import exp\n",
+    "import random;\n",
+    "import numpy as np;"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h3>Fonctions de chargement des données</h3>"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Les données de train ou de test seront de la forme : <br/>\n",
+    "{ <b>user1</b> : { movie1 : rating11, movie2 : rating12, .... }, <b>user2</b> : { .... } ...}"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "def loadMovieLens(path='ms/recodata', file='/u.data'):    \n",
+    "    prefs={};    \n",
+    "    for line in open(path+'/'+file):\n",
+    "        (user,movieid,rating,ts)=line.split('\\t')\n",
+    "        prefs.setdefault(user,{})    \n",
+    "        prefs[user][movieid]=float(rating)\n",
+    "    return prefs"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Les liens entre utilisateurs seront représentés sur un dictionnaire simple:<br/>\n",
+    "{ <b>user1</b> : { userVoisin1, userVoisin2, userVoisin3, ... }, <b>user2</b> : {...}  ...}"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {
+    "collapsed": false
+   },
+   "outputs": [],
+   "source": [
+    "def loadLinks(path='ms/recodata', file='/u.links'):\n",
+    "    prefs={};\n",
+    "    for line in open(path+'/'+file):\n",
+    "        line  = line[:-2]        \n",
+    "        links = line.split('\\t')\n",
+    "        prefs.setdefault(links[0],{})            \n",
+    "        prefs[links[0]] = links[1:len(links)]\n",
+    "    return prefs"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h3>Chargement des données</h3>\n",
+    "Nous avons testé notre modèle sur les données u1:"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {
+    "collapsed": false
+   },
+   "outputs": [],
+   "source": [
+    "train1 = loadMovieLens(\"ms/recodata\",\"u1.train\");\n",
+    "test1 = loadMovieLens(\"ms/recodata\",\"u1.test\");\n",
+    "links = loadLinks();"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "La fonction suivante permet d'extraire les notes des utilisateurs sur des films sur la partie test. Elle sera utilisée à la fin pour pouvoir evaluer notre modèle"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "def getRates(test):\n",
+    "    rates = []\n",
+    "    for user in test:\n",
+    "        for item in test[user].keys():                                                \n",
+    "            rates.append(test[user][item])                \n",
+    "    return np.array(rates)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h3>Modèle SoRec</h3>"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Notre modèle sera donc representé par la classe SoRec définie ci-dessou, en plus des deux fonctions fit et predict, elle contient la fonction logistique g et sa dérivé g':"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {
+    "collapsed": false
+   },
+   "outputs": [],
+   "source": [
+    "class SoRec():\n",
+    "    def __init__(self, n, I, eps, train, links):\n",
+    "        self.I       = I\n",
+    "        self.n       = n\n",
+    "        self.eps     = eps\n",
+    "        self.train   = train\n",
+    "        self.links   = links\n",
+    "        self.Z = {}\n",
+    "        self.W = {}\n",
+    "        self.F = {}\n",
+    "        self.getRandomVecs(train)\n",
+    "        \n",
+    "    # Methode qui entraine le modèle    \n",
+    "    def fit(self, train):\n",
+    "        e = []\n",
+    "        for iteration in range(self.I):            \n",
+    "            error1 = 0\n",
+    "            error2 = 0 \n",
+    "            for j in range(len(train)):\n",
+    "                \n",
+    "                Rui,u,i = self.getRandomUserItem(train)   \n",
+    "                while u not in links:\n",
+    "                    Rui,u,i = self.getRandomUserItem(train)\n",
+    "                    \n",
+    "                self.Z[u] = self.Z[u] - self.eps * (\n",
+    "                                                    ( Rui - self.g( self.Z[u].dot(self.W[i]) ) ) \n",
+    "                                                    *self.dg(self.Z[u].dot(self.W[i])) \n",
+    "                                                    *self.W[i]\n",
+    "                                                   )                             \n",
+    "                self.W[i] = self.W[i] - self.eps * (\n",
+    "                                                    (Rui - self.g( self.Z[u].dot(self.W[i])) )\n",
+    "                                                    *self.dg(self.Z[u].dot(self.W[i]))\n",
+    "                                                    *self.Z[u]\n",
+    "                                                    )                   \n",
+    "                error1 += (Rui - self.g(self.Z[u].dot(self.W[i])))**2\n",
+    "                                \n",
+    "                l = random.choice(list(links[u]))                              \n",
+    "                if l not in self.F:\n",
+    "                    self.F.setdefault(l,{})            \n",
+    "                    self.F[l] = np.random.rand(1,self.n)[0]\n",
+    "                r = np.random.random()                  \n",
+    "                self.Z[u] = self.Z[u] - self.eps * (\n",
+    "                                                    ( Rui - self.g( self.Z[u].dot(self.F[l]) ) ) \n",
+    "                                                    *self.dg(self.Z[u].dot(self.F[l])) \n",
+    "                                                    *self.F[l]\n",
+    "                                                   )                    \n",
+    "                self.F[l] = self.F[l] - self.eps * (\n",
+    "                                                    ( 1 - self.g( self.Z[u].dot(self.F[l])) )\n",
+    "                                                    *self.dg(self.Z[u].dot(self.F[l]))\n",
+    "                                                    *self.Z[u]\n",
+    "                                                   )\n",
+    "                            \n",
+    "                error2 += (1 - self.g(self.Z[u].dot(self.F[l])))**2            \n",
+    "            if iteration%10==0:    \n",
+    "                print str(iteration),\" : \",(error1+error2)/len(train)\n",
+    "            e.append((error1+error2)/len(train))    \n",
+    "        \"\"\"    \n",
+    "        import matplotlib.pyplot as plt\n",
+    "        plt.plot(e)\n",
+    "        plt.ylabel('some numbers')\n",
+    "        plt.show()    \n",
+    "        \"\"\"\n",
+    "    # Méthode qui fait la prédiction\n",
+    "    def predict(self, test):\n",
+    "        prediction = []\n",
+    "        r=0\n",
+    "        for user in test:\n",
+    "            for item in test[user].keys():                                                \n",
+    "                if item in self.W:\n",
+    "                    r = self.Z[user].dot(self.W[item])\n",
+    "                    prediction.append(r)\n",
+    "                else:\n",
+    "                    prediction.append(r)\n",
+    "        return prediction\n",
+    "    \n",
+    "    \n",
+    "    \n",
+    "    ##### D'autres methodes de calcul:\n",
+    "    def g(self,x):\n",
+    "        return 1.0/( 1.0+exp(-x) )\n",
+    "    def dg(self,x):                \n",
+    "        return -exp(-x/( 1.0+exp(-x)))\n",
+    "    \n",
+    "    \n",
+    "    def getRandomVecs(self, train):        \n",
+    "        for t in train.keys():\n",
+    "            self.Z.setdefault(t,{})\n",
+    "            self.Z[t]= np.random.rand(1,self.n)[0]\n",
+    "            \n",
+    "        for t in train.values():\n",
+    "            for item in t.keys():\n",
+    "                self.W.setdefault(item,{})                                                  \n",
+    "                self.W[item]= np.random.rand(1,self.n)[0]                \n",
+    "                \n",
+    "    def getRandomUserItem(self, data):            \n",
+    "        u = random.choice(list(data.keys()))\n",
+    "        i = random.choice(list(data[u]))\n",
+    "        Rui = data[u][i]\n",
+    "        return Rui,u,i    "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {
+    "collapsed": false
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "0  :  9.1097651798\n",
+      "10  :  8.87205655026\n",
+      "20  :  8.85829650563\n",
+      "30  :  8.2904590095\n",
+      "40  :  8.13714748295\n",
+      "50  :  8.25362267883\n",
+      "60  :  8.41514086771\n",
+      "70  :  8.52027847202\n",
+      "80  :  8.22092572588\n",
+      "90  :  7.94626930537\n",
+      "mae :  0.98760394855\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Instanciation du modèle\n",
+    "model = SoRec(5, 100, 0.01, train1, links)\n",
+    "# Apprentissage du modèle\n",
+    "model.fit(train1)\n",
+    "# Prédiction du modèle\n",
+    "pred = model.predict(test1)\n",
+    "notes = getRates(test1)\n",
+    "# Calcul de l'erreur\n",
+    "mae = np.abs(pred - notes).mean()\n",
+    "print \"mae : \",mae"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h3>Modèle sur les autres données</h3>"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {
+    "collapsed": false
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Jeux de données numero  1\n",
+      "0  :  9.35965993118\n",
+      "10  :  8.88236730221\n",
+      "20  :  8.52677221394\n",
+      "30  :  8.56746691924\n",
+      "40  :  8.45345573997\n",
+      "50  :  8.36736674939\n",
+      "60  :  8.37895691792\n",
+      "70  :  7.65379168782\n",
+      "80  :  8.14604620276\n",
+      "90  :  8.12163960744\n",
+      "mae :  0.984884200087\n",
+      "------------------------------------------------\n",
+      "Jeux de données numero  2\n",
+      "0  :  9.29890202665\n",
+      "10  :  8.90510744048\n",
+      "20  :  8.65236963315\n",
+      "30  :  8.20280862437\n",
+      "40  :  8.12815342819\n",
+      "50  :  8.41507243293\n",
+      "60  :  8.24331036438\n",
+      "70  :  8.48124401025\n",
+      "80  :  7.99932352994\n",
+      "90  :  8.01160773587\n",
+      "mae :  0.989942958903\n",
+      "------------------------------------------------\n",
+      "Jeux de données numero  3\n",
+      "0  :  9.26436248784\n",
+      "10  :  8.76717715569\n",
+      "20  :  8.54172276386\n",
+      "30  :  8.41963803622\n",
+      "40  :  8.56055259193\n",
+      "50  :  8.34554973644\n",
+      "60  :  8.01702115285\n",
+      "70  :  8.18926334172\n",
+      "80  :  8.04992260777\n",
+      "90  :  8.02201065114\n",
+      "mae :  0.973792302177\n",
+      "------------------------------------------------\n",
+      "Jeux de données numero  4\n",
+      "0  :  9.53172406269\n",
+      "10  :  8.44860624376\n",
+      "20  :  8.63557928173\n",
+      "30  :  8.31003017172\n",
+      "40  :  8.63378800741\n",
+      "50  :  8.37660529701\n",
+      "60  :  8.35731928566\n",
+      "70  :  8.48433680584\n",
+      "80  :  8.21032286486\n",
+      "90  :  7.9083512659\n",
+      "mae :  0.980562926571\n",
+      "------------------------------------------------\n",
+      "Jeux de données numero  5\n",
+      "0  :  9.13945444177\n",
+      "10  :  9.07234408605\n",
+      "20  :  8.73416923755\n",
+      "30  :  8.61092143112\n",
+      "40  :  8.32182494993\n",
+      "50  :  8.3150940282\n",
+      "60  :  8.20570215236\n",
+      "70  :  8.29978882999\n",
+      "80  :  8.08166442633\n",
+      "90  :  8.35229990417\n",
+      "mae :  0.982114054143\n",
+      "------------------------------------------------\n"
+     ]
+    }
+   ],
+   "source": [
+    "strTrain = ['u1.train','u2.train','u3.train','u4.train','u5.train']\n",
+    "strTest  = ['u1.test','u2.test','u3.test','u4.test','u5.test']\n",
+    "links = loadLinks();\n",
+    "for i in range(5):\n",
+    "    print \"Jeux de données numero \",(i+1)\n",
+    "    train = loadMovieLens(\"ms/recodata\",strTrain[i]);\n",
+    "    test  = loadMovieLens(\"ms/recodata\",strTest[i]);\n",
+    "    # Instanciation du modèle\n",
+    "    model = SoRec(5, 100, 0.01, train, links)\n",
+    "    # Apprentissage du modèle\n",
+    "    model.fit(train)\n",
+    "    # Prédiction du modèle\n",
+    "    pred = model.predict(test)\n",
+    "    notes = getRates(test)\n",
+    "    # Calcul de l'erreur\n",
+    "    mae = np.abs(pred - notes).mean()\n",
+    "    print \"mae : \",mae\n",
+    "    print \"------------------------------------------------\""
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 2",
+   "language": "python",
+   "name": "python2"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 2
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython2",
+   "version": "2.7.10"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 0
+}
